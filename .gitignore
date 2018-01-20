@@ -1,0 +1,5 @@
+.idea/
+tmp*
+*.py[cod]
+__pycache__/
+test_runer.py
