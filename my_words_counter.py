@@ -6,12 +6,11 @@ import sys
 
 from nltk import download, pos_tag
 
-TOP_SIZE = 200
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-ch = logging.StreamHandler(sys.stdout)
-logger.addHandler(ch)
+TOP_SIZE = 10
+# Used logging for debug purposes:
+logging.basicConfig(stream=sys.stderr,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                    level=logging.INFO)
 
 
 def _flat(_list):
@@ -56,42 +55,64 @@ def _get_file_data(main_file_content, with_file_content=False):
 
 
 def _get_trees(path, with_filenames=False, with_file_content=False):
+    """
+    :param str path:
+    :param bool with_filenames:
+    :param bool with_file_content:
+    :return list: list of ast-objects
+    """
     trees = []
-    filenames = []
+    logging.debug(u"Get_trees - path: {}".format(path))
     for dirname, dirs, files in os.walk(path, topdown=True):
+        logging.debug(u'path parts: {} - {} -- {}'.format(dirname, dirs, files))
         filenames = _get_py_file_names(dirname, files)
-    logger.debug('total %s files' % len(filenames))
+        logging.debug('total %s files' % len(filenames))
+        batch_results = _parse_batch_of_filenames(filenames, with_filenames, with_file_content)
+        trees.extend(batch_results)
+    logging.debug('trees generated')
+    return trees
 
+
+def _parse_batch_of_filenames(filenames, with_filenames, with_file_content):
+    """
+    :param list filenames: list of paths
+    :param bool with_filenames: flag to take file names for search
+    :param bool with_file_content: flag to take file content for search
+    :return list: list of strings
+    """
+    batch_results = []
     for filename in filenames:
         with open(filename, 'r', encoding='utf-8') as attempt_handler:
             main_file_content = attempt_handler.read()
         if with_filenames:
-            trees.append(filename)
+            batch_results.append(filename)
         data_about_file = _get_file_data(main_file_content, with_file_content)
-        trees.extend(data_about_file)
-    logger.debug('trees generated')
-    return trees
+        batch_results.extend(data_about_file)
+    return batch_results
 
 
-def _get_all_names(tree):
-    return [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
+def _get_top_names(trees, top_size=10):
+    """
+    :param list trees: list of ast-tree objects
+    :param int top_size:
+    :return list: list of tuples
+    """
+    names = []
+    for tree in trees:
+        nms_batch = [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
+        names.extend(nms_batch)
+    return collections.Counter(names).most_common(top_size)
 
 
 def _get_verbs_from_function_name(function_name):
     return [word for word in function_name.split('_') if _is_verb(word)]
 
 
-def _split_snake_case_name_to_words(name):
-    return [n for n in name.split('_') if n]
-
-
-def _get_all_words_in_path(path):
-    trees = [t for t in _get_trees(path) if t]
-    function_names = [f for f in _flat([_get_all_names(t) for t in trees]) if not (f.startswith('__') and f.endswith('__'))]
-    return _flat([_split_snake_case_name_to_words(function_name) for function_name in function_names])
-
-
 def _parse_function_names(trees):
+    """
+    :param list trees: list of ast objects
+    :return list: list of str (function names)
+    """
     results = []
     for t in trees:
         results += [node.name.lower() for node in ast.walk(t) if isinstance(node, ast.FunctionDef)]
@@ -99,80 +120,83 @@ def _parse_function_names(trees):
     return functions
 
 
-def _get_top_verbs_in_path(path, top_size=10):
+def _get_top_verbs_in_path(trees, top_size=10):
     """
-    :param str path:
+    :param list trees: list of ast-trees
     :param int top_size:
-    :return:
+    :return list: list of tuples
     """
-    trees = [t for t in _get_trees(path) if t]
     functions = _parse_function_names(trees)
-    logger.debug('functions extracted')
     verbs = _flat([_get_verbs_from_function_name(function_name) for function_name in functions])
     return collections.Counter(verbs).most_common(top_size)
 
 
-def _get_top_functions_names_in_path(path, top_size=10):
-    t = _get_trees(path)
-    nms = [f for f in _flat([[node.name.lower() for node in ast.walk(t) if isinstance(node, ast.FunctionDef)] for t in t]) if not (f.startswith('__') and f.endswith('__'))]
-    return collections.Counter(nms).most_common(top_size)
-
-
-def _print_statistics(words, most_common_limit=200):
-    logger.info('total number of words: %s; (unique: %s)' % (len(words), len(set(words))))
-    logger.info('By words statistic')
-    for word, occurence in collections.Counter(words).most_common(most_common_limit):
-        # logger.info(word, occurence)
-        print(word, occurence)
-
-
-def set_logging(level, is_using_formatter=False, is_remove_existing_handlers=True,
-                log_format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'):
+def _get_top_functions_names(trees, top_size=10):
     """
-    Set logging parameters manually for library
-    :param str level: 'DEBUG', 'INFO', ...
-    :param bool is_using_formatter: if True log_format parameter will be used for formatting handler messages
-    :param bool is_remove_existing_handlers: if True current handlers for logger will be removed
-    :param str log_format: format for logging messages
+    :param list trees: list of ast-tree objects
+    :param int top_size:
+    :return list: list of tuples
+    """
+    func_names = []
+    for tree in trees:
+        func_nms_batch = [node.name.lower() for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+        func_names.extend(func_nms_batch)
+    public_func_names = [f for f in func_names if not (f.startswith('__') and f.endswith('__'))]
+    return collections.Counter(public_func_names).most_common(top_size)
+
+
+def _print_statistics(words, entity_name='entity'):
+    """
+    :param list words: list of tuples. Ex.: [('get', 53), ('make', 30), ('find', 3), ('add', 2), ...]
+    :param entity_name:
     :return:
     """
-    if is_remove_existing_handlers:
-        logger.handlers = []  # remove existing handlers for logging
-    handler = logging.StreamHandler(sys.stdout)
-    level = logging.getLevelName(level)
-    handler.setLevel(level)
-    if is_using_formatter:
-        formatter = logging.Formatter(log_format)
-        handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    level = logging.getLevelName('INFO')
-    logger.setLevel(level)
+    print('\ntotal number of words: %s; (unique: %s)' % (len(words), len(set(words))))
+    print('By {} statistic'.format(entity_name))
+    for word in words:
+        print(u"{}: {}".format(word[0], word[1]))
 
 
 def check_projects(path, projects):
+    """
+    :param str path:
+    :param projects: list or tuple
+    :return: list or tuple
+    """
     if not projects:
         projects = (x[0] for x in os.walk(path))
     return projects
 
 
-def count_verbs(path='./', projects=tuple(), top_size=TOP_SIZE):
+def calculate_statistics(path='./', projects=tuple(), top_size=TOP_SIZE, with_filename=False,
+                         with_file_content=False):
     """
     Count verbs in code for gotten path
     :param str path: system path to directory where counting will be executed.
     :param tuple projects: list of projects (directories) where search will be done
     (by default search in all directories)
+    :param bool with_filename: if True - get stats also about file names
+    :param bool with_file_content: if True - get stats also about file contents
     :param int top_size: number of most common verbs that will be printed
     :return:
     """
     try:
-        logger.debug(u"Input arguments: path: {}; projects: {}; "
-                     u"top_size: {}".format(path, projects, top_size))
+        logging.debug(u"Input arguments: path: {}; projects: {}; "
+                      u"top_size: {}".format(path, projects, top_size))
         download('averaged_perceptron_tagger')
-        words = []
+        names = []
+        verbs = []
+        function_names = []
         projects = check_projects(path, projects)
         for project in projects:
             project_path = os.path.join(path, project)
-            words += _get_top_verbs_in_path(project_path)
-        _print_statistics(words, top_size)
+            trees = _get_trees(project_path)
+            names += _get_top_names(trees, top_size=top_size)
+            verbs += _get_top_verbs_in_path(trees, top_size=top_size)
+            function_names += _get_top_functions_names(trees, top_size=top_size)
+        _print_statistics(names, entity_name='names')
+        _print_statistics(verbs, entity_name='verbs')
+        _print_statistics(function_names, entity_name='functions')
     except Exception as e:
         print(e)
+        raise e
