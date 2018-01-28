@@ -6,6 +6,8 @@ import os
 import shutil
 import sys
 import time
+
+import click
 import ujson
 
 from nltk import download
@@ -109,17 +111,22 @@ def _save_results_to_csv(data, base_report_file):
         print(u"CSV file was saved: {}".format(report_file))
 
 
+def _make_abs_path_to_file(path):
+    if path and not os.path.isabs(path):
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), path)
+    return path
+
+
 def _create_report(data, report_type, report_file):
-    if report_file and not os.path.isabs(report_file):
-        os.path.join(os.path.dirname(os.path.realpath(__file__)), report_file)
+    report_file = _make_abs_path_to_file(report_file)
+
     if report_type == 'cli':
         _print_to_console(data)
     elif report_type == 'json':
         _save_results_to_json(data, report_file)
     elif report_type == 'csv':
         _save_results_to_csv(data, report_file)
-    else:
-        raise WordsCounterError("Was not able to write data with method: {}".format(report_type))
+    raise WordsCounterError("Was not able to write data with method: {}".format(report_type))
 
 
 def _make_dirs_to_process(data_dir, projects):
@@ -131,16 +138,20 @@ def _make_dirs_to_process(data_dir, projects):
     return processing_dirs
 
 
+def _transfer_projects(projects, data_dir, working_dir):
+    for project in projects:
+        prj_old_path = os.path.join(data_dir, project)
+        prj_new_path = os.path.join(working_dir, project)
+        shutil.copytree(prj_old_path, prj_new_path)
+
+
 def _prepare_input_local_data(data_dir: str, projects: tuple, working_dir: str):
     if not data_dir:
         raise WordsCounterError('Cannot find data_dir for local data')
     if not os.path.isabs(data_dir):
         data_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), data_dir)
     if projects:
-        for project in projects:
-            prj_old_path = os.path.join(data_dir, project)
-            prj_new_path = os.path.join(working_dir, project)
-            shutil.copytree(prj_old_path, prj_new_path)
+        _transfer_projects(projects, data_dir, working_dir)
     else:
         shutil.copytree(data_dir, working_dir)
 
@@ -165,6 +176,20 @@ def _prepare_input_data(data_dir: str, projects: tuple, working_dir: str, is_loc
     return working_dir
 
 
+@click.command()
+@click.option('--data_dir', default='', help='Path to local dir with explored projects')
+@click.option('--projects', default=tuple(), help='Tuple of subdirs with projects')
+@click.option('--working_dir', default='input_data', help='Dir where data will be put for analysis')
+@click.option('--is_local_data', is_flag=True, help='Raised flag tells that input data is local')
+@click.option('--remote_paths_tuple', default=tuple(), help='Tuple of paths to remote input data')
+@click.option('--remote_resource_type', default='git', help='Type of remote service with input data')
+@click.option('--is_data_already_in_working_dir', is_flag=True, help='Tells that no need to download'
+                                                                     'input data before analyzing')
+@click.option('--stats_params_collection',
+              help="Example: (('words_frequency', 'verb', 100),)")
+@click.option('--report_type', default='cli', type=click.Choice(('cli', 'json', 'csv')),
+              help='format of result report')
+@click.option('--report_file', default='', help='Name of file with report')
 def make_stats_report(data_dir='', projects=tuple(), working_dir='input_data', is_local_data=True,
                       remote_paths_tuple=tuple(), remote_resource_type='git',
                       is_data_already_in_working_dir=False, extra_remote_resourse_params=None,
@@ -175,7 +200,6 @@ def make_stats_report(data_dir='', projects=tuple(), working_dir='input_data', i
                               ('ast_names_frequency', 'func_local_var_names', 10, 'python')
                       ),
                       report_type='cli', report_file=None):
-    # download('punkt')
     download('averaged_perceptron_tagger')
     working_dir = _prepare_input_data(
         data_dir=data_dir, projects=projects, working_dir=working_dir,
@@ -190,5 +214,6 @@ def make_stats_report(data_dir='', projects=tuple(), working_dir='input_data', i
     _create_report(results, report_type=report_type, report_file=report_file)
 
 
-
+if __name__ == '__main__':
+    make_stats_report()
 

@@ -36,6 +36,12 @@ my_words_counter.make_stats_report(
     report_file='results.json'
 )
 ```
+2) from command line (not working now):
+```
+python -m my_words_counter --remote_paths_tuple "('https://github.com/pallets/flask',')" --stats_params_collection "(('ast_names_frequency', 'func_names', 10, 'python'),)"
+
+```
+
 
 Requirements:
 - Github console client (git) should be installed on your system if you want to get statistics about git repositories.
@@ -50,6 +56,7 @@ https://stackoverflow.com/a/41150051
 - working with different code bases not only python;
 - collecting different statistical slices;
 - creating different forms of reports;
+
 You are free to evolve this library for your own purposes.
 
 
