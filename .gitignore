@@ -3,3 +3,6 @@ tmp*
 *.py[cod]
 __pycache__/
 test_runer.py
+input_data/
+*.csv
+results*

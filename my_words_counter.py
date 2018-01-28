@@ -1,111 +1,30 @@
 import ast
-import os
 import collections
+import csv
 import logging
+import os
+import shutil
 import sys
+import time
+import ujson
 
-from nltk import download, pos_tag
+from nltk import download
 
-TOP_SIZE = 10
+from stats_logic import calculate_statistics
+
 # Used logging for debug purposes:
 logging.basicConfig(stream=sys.stderr,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                     level=logging.INFO)
 
 
+class WordsCounterError(Exception):
+    pass
+
+
 def _flat(_list):
     """ [(1,2), (3,4)] -> [1, 2, 3, 4]"""
     return sum([list(item) for item in _list], [])
-
-
-def _is_verb(word):
-    if not word:
-        return False
-    pos_info = pos_tag([word])
-    return pos_info[0][1] == 'VB'
-
-
-def _get_py_file_names(dirname, files, max_number_of_py_files=100):
-    """
-    :param str dirname: path to dir
-    :param list files: list file names
-    :param max_number_of_py_files:
-    :return list: list of paths to files
-    """
-    filenames = []
-    for file in files:
-        if not file.endswith('.py'):
-            continue
-        filenames.append(os.path.join(dirname, file))
-        if len(filenames) == max_number_of_py_files:
-            break
-    return filenames
-
-
-def _get_file_data(main_file_content, with_file_content=False):
-    data_about_file = []
-    if with_file_content:
-        data_about_file.append(main_file_content)
-    try:
-        tree = ast.parse(main_file_content)
-        data_about_file.append(tree)
-    except SyntaxError as e:
-        print(e)
-    return data_about_file
-
-
-def _get_trees(path, with_filenames=False, with_file_content=False):
-    """
-    :param str path:
-    :param bool with_filenames:
-    :param bool with_file_content:
-    :return list: list of ast-objects
-    """
-    trees = []
-    logging.debug(u"Get_trees - path: {}".format(path))
-    for dirname, dirs, files in os.walk(path, topdown=True):
-        logging.debug(u'path parts: {} - {} -- {}'.format(dirname, dirs, files))
-        filenames = _get_py_file_names(dirname, files)
-        logging.debug('total %s files' % len(filenames))
-        batch_results = _parse_batch_of_filenames(filenames, with_filenames, with_file_content)
-        trees.extend(batch_results)
-    logging.debug('trees generated')
-    return trees
-
-
-def _parse_batch_of_filenames(filenames, with_filenames, with_file_content):
-    """
-    :param list filenames: list of paths
-    :param bool with_filenames: flag to take file names for search
-    :param bool with_file_content: flag to take file content for search
-    :return list: list of strings
-    """
-    batch_results = []
-    for filename in filenames:
-        with open(filename, 'r', encoding='utf-8') as attempt_handler:
-            main_file_content = attempt_handler.read()
-        if with_filenames:
-            batch_results.append(filename)
-        data_about_file = _get_file_data(main_file_content, with_file_content)
-        batch_results.extend(data_about_file)
-    return batch_results
-
-
-def _get_top_names(trees, top_size=10):
-    """
-    :param list trees: list of ast-tree objects
-    :param int top_size:
-    :return list: list of tuples
-    """
-    names = []
-    for tree in trees:
-        nms_batch = [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
-        names.extend(nms_batch)
-    return collections.Counter(names).most_common(top_size)
-
-
-def _get_verbs_from_function_name(function_name):
-    return [word for word in function_name.split('_') if _is_verb(word)]
 
 
 def _parse_function_names(trees):
@@ -114,21 +33,10 @@ def _parse_function_names(trees):
     :return list: list of str (function names)
     """
     results = []
-    for t in trees:
-        results += [node.name.lower() for node in ast.walk(t) if isinstance(node, ast.FunctionDef)]
+    for tree in trees:
+        results += [node.name.lower() for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
     functions = [f for f in results if not (f.startswith('__') and f.endswith('__'))]
     return functions
-
-
-def _get_top_verbs_in_path(trees, top_size=10):
-    """
-    :param list trees: list of ast-trees
-    :param int top_size:
-    :return list: list of tuples
-    """
-    functions = _parse_function_names(trees)
-    verbs = _flat([_get_verbs_from_function_name(function_name) for function_name in functions])
-    return collections.Counter(verbs).most_common(top_size)
 
 
 def _get_top_functions_names(trees, top_size=10):
@@ -145,58 +53,142 @@ def _get_top_functions_names(trees, top_size=10):
     return collections.Counter(public_func_names).most_common(top_size)
 
 
-def _print_statistics(words, entity_name='entity'):
+def _get_git_data(data_dir, git_path, extra_params=''):
     """
-    :param list words: list of tuples. Ex.: [('get', 53), ('make', 30), ('find', 3), ('add', 2), ...]
-    :param entity_name:
+    :param str data_dir:
+    :param str git_path:
+    :param str extra_params:
     :return:
     """
-    print('\ntotal number of words: %s; (unique: %s)' % (len(words), len(set(words))))
-    print('By {} statistic'.format(entity_name))
-    for word in words:
-        print(u"{}: {}".format(word[0], word[1]))
+    command = "git clone {} {}".format(git_path, data_dir)
+    logging.debug(u"Git command: {}".format(command))
+    os.system(command)
 
 
-def check_projects(path, projects):
+def _get_remote_data_for_analyze(working_dir, remote_resource_type,
+                                 remote_paths_tuple=tuple(), extra_params=''):
     """
-    :param str path:
-    :param projects: list or tuple
-    :return: list or tuple
+    :param str working_dir:
+    :param str remote_resource_type:
+    :param tuple remote_paths_tuple:
+    :param str extra_params:
+    :return:
     """
+    if remote_resource_type == 'git':
+        for remote_path in remote_paths_tuple:
+            subdir = os.path.join(working_dir, str(int(time.time())))
+            _get_git_data(subdir, remote_path, extra_params)
+
+
+def _print_to_console(data):
+    for key in data.keys():
+        print("\n\nReport: {} (top size: {})\ndescription: {}".format(
+            key, data[key].get('top_size', ''), data[key]['description'])
+        )
+        for element in data[key]['stats']:
+            print(u"{} - {}".format(element[0], element[1]))
+
+
+def _save_results_to_json(data, report_file):
+    with open(report_file, 'w') as f:
+        f.write(ujson.dumps(data))
+
+
+def _save_csv_file(data, report_file):
+    with open(report_file, 'w') as f:
+        writer = csv.writer(f)
+        for row in data:
+            writer.writerow(row)
+        writer.writerow(['word', 'frequency'])
+
+
+def _save_results_to_csv(data, base_report_file):
+    for report in data.keys():
+        report_file = base_report_file.replace(".csv", "_{}.csv".format(report))
+        _save_csv_file(data[report]['stats'], report_file)
+        print(u"CSV file was saved: {}".format(report_file))
+
+
+def _create_report(data, report_type, report_file):
+    if report_file and not os.path.isabs(report_file):
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), report_file)
+    if report_type == 'cli':
+        _print_to_console(data)
+    elif report_type == 'json':
+        _save_results_to_json(data, report_file)
+    elif report_type == 'csv':
+        _save_results_to_csv(data, report_file)
+    else:
+        raise WordsCounterError("Was not able to write data with method: {}".format(report_type))
+
+
+def _make_dirs_to_process(data_dir, projects):
+    processing_dirs = []
     if not projects:
-        projects = (x[0] for x in os.walk(path))
-    return projects
+        projects = (x[0] for x in os.walk(data_dir))
+    for project in projects:
+        processing_dirs.append(os.path.join(data_dir, project))
+    return processing_dirs
 
 
-def calculate_statistics(path='./', projects=tuple(), top_size=TOP_SIZE, with_filename=False,
-                         with_file_content=False):
-    """
-    Count verbs in code for gotten path
-    :param str path: system path to directory where counting will be executed.
-    :param tuple projects: list of projects (directories) where search will be done
-    (by default search in all directories)
-    :param bool with_filename: if True - get stats also about file names
-    :param bool with_file_content: if True - get stats also about file contents
-    :param int top_size: number of most common verbs that will be printed
-    :return:
-    """
-    try:
-        logging.debug(u"Input arguments: path: {}; projects: {}; "
-                      u"top_size: {}".format(path, projects, top_size))
-        download('averaged_perceptron_tagger')
-        names = []
-        verbs = []
-        function_names = []
-        projects = check_projects(path, projects)
+def _prepare_input_local_data(data_dir: str, projects: tuple, working_dir: str):
+    if not data_dir:
+        raise WordsCounterError('Cannot find data_dir for local data')
+    if not os.path.isabs(data_dir):
+        data_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), data_dir)
+    if projects:
         for project in projects:
-            project_path = os.path.join(path, project)
-            trees = _get_trees(project_path)
-            names += _get_top_names(trees, top_size=top_size)
-            verbs += _get_top_verbs_in_path(trees, top_size=top_size)
-            function_names += _get_top_functions_names(trees, top_size=top_size)
-        _print_statistics(names, entity_name='names')
-        _print_statistics(verbs, entity_name='verbs')
-        _print_statistics(function_names, entity_name='functions')
-    except Exception as e:
-        print(e)
-        raise e
+            prj_old_path = os.path.join(data_dir, project)
+            prj_new_path = os.path.join(working_dir, project)
+            shutil.copytree(prj_old_path, prj_new_path)
+    else:
+        shutil.copytree(data_dir, working_dir)
+
+
+def _prepare_input_data(data_dir: str, projects: tuple, working_dir: str, is_local_data: bool,
+                        remote_resource_type: str, remote_paths_tuple: tuple,
+                        is_data_already_in_working_dir: bool,
+                        extra_remote_resourse_params: str) -> str:
+    if not os.path.isabs(working_dir):
+        working_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), working_dir)
+
+    if is_data_already_in_working_dir:
+        return working_dir
+
+    shutil.rmtree(working_dir)
+    if is_local_data:
+        _prepare_input_local_data(data_dir, projects, working_dir)
+    else:
+        _get_remote_data_for_analyze(
+            working_dir, remote_resource_type, remote_paths_tuple, extra_remote_resourse_params
+        )
+    return working_dir
+
+
+def make_stats_report(data_dir='', projects=tuple(), working_dir='input_data', is_local_data=True,
+                      remote_paths_tuple=tuple(), remote_resource_type='git',
+                      is_data_already_in_working_dir=False, extra_remote_resourse_params=None,
+                      stats_params_collection=(
+                              ('words_frequency', 'verb', 100),
+                              ('words_frequency', 'noun', 100),
+                              ('ast_names_frequency', 'func_names', 10, 'python'),
+                              ('ast_names_frequency', 'func_local_var_names', 10, 'python')
+                      ),
+                      report_type='cli', report_file=None):
+    # download('punkt')
+    download('averaged_perceptron_tagger')
+    working_dir = _prepare_input_data(
+        data_dir=data_dir, projects=projects, working_dir=working_dir,
+        is_local_data=is_local_data, remote_resource_type=remote_resource_type,
+        remote_paths_tuple=remote_paths_tuple,
+        is_data_already_in_working_dir=is_data_already_in_working_dir,
+        extra_remote_resourse_params=extra_remote_resourse_params
+    )
+    results = calculate_statistics(
+        dir_path=working_dir, stats_params_collection=stats_params_collection
+    )
+    _create_report(results, report_type=report_type, report_file=report_file)
+
+
+
+

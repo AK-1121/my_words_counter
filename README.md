@@ -1,10 +1,55 @@
-Library my_words_counter helps to count frequency of English words in code.
+**My_words_counter**
 
-In library is used nltk -  a Python package for natural language processing:
-https://pypi.python.org/pypi/nltk
-http://www.nltk.org/
+Library my_words_counter helps to gather different words statistics in python
+projects.
 
-Public methods now available:
-1. calculate_statistics(path, projects, top_size) - count verbs in project.
-Method determines that a word is a verb with the help of nltk averaged perceptron tagger.
-In case of not existing path you will get error.
+Now available methods to collect information:
+1) display most commonly used words in code (verb/nouns)
+2) display most often used function names and local variables names
+
+make_stats_report - public method for getting statistics. 
+- It could be called via console or directly in code.
+- Input data can be taken from local directories or from github repos
+(several repos could be processed at once)
+- Resulting information can be printed in the console or saved in json or csv files.
+
+
+Examples of usage:
+1) from code:
+```
+import my_words_counter
+
+my_words_counter.make_stats_report(
+    is_local_data=False,
+    remote_paths_tuple=(
+        'https://github.com/pallets/flask', 
+        'https://github.com/AK-1121/my_words_counter'
+    ),
+    stats_params_collection=(
+       ('words_frequency', 'verb', 100),
+       ('words_frequency', 'noun', 100),
+       ('ast_names_frequency', 'func_names', 10, 'python'),
+       ('ast_names_frequency', 'func_local_var_names', 10, 'python'),
+    ),
+    # is_data_already_in_working_dir=True,
+    report_type='json',
+    report_file='results.json'
+)
+```
+
+Requirements:
+- Github console client (git) should be installed on your system if you want to get statistics about git repositories.
+ 
+Remarks:
+1) for finding out part of speach for word is used nltk library -  a Python package for natural language processing:
+https://pypi.python.org/pypi/nltk  http://www.nltk.org/
+Hear you can find a list of all possible tokens for different types of words (used in nltk):
+https://stackoverflow.com/a/41150051
+2) this library was conctructed in way to be easily extended for:
+- getting information from different remote file services;
+- working with different code bases not only python;
+- collecting different statistical slices;
+- creating different forms of reports;
+You are free to evolve this library for your own purposes.
+
+
